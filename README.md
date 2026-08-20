@@ -1,5 +1,7 @@
 # Kimi Code Usage HUD
 
+> 直接下载：[kimi-usage-hud-0.1.0.zip](https://github.com/LMFrank/kimi-usage-hud/releases/download/0.1.0/kimi-usage-hud-0.1.0.zip)
+
 给 kimi-code 的 Web UI 加一条**会话用量状态条**：不用登录、不用调 Kimi 账号，只读本地 `~/.kimi-code/sessions`，把当前会话的 token、耗时、缓存、TTFT、TPS 折叠成一行，实时显示在页面右上角。
 
 ## 痛点
