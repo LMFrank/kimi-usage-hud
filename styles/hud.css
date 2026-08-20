@@ -1,0 +1,164 @@
+/* Kimi Code Usage HUD —— 顶部右上角状态胶囊，浅色/深色两套主题。
+   样式都限制在 #kimi-usage-hud 作用域内，避免污染宿主页面。 */
+
+#kimi-usage-hud {
+  /* 默认浅色，匹配 kimi 页面 */
+  --kuh-bg-from: #ffffff;
+  --kuh-bg-to: #f4f5f7;
+  --kuh-border: rgba(0, 0, 0, 0.08);
+  --kuh-text: #2b313b;
+  --kuh-muted: #6b7480;
+  --kuh-brand: #8b95a3;
+  --kuh-control-bg: #ffffff;
+  --kuh-control-border: #d5dae1;
+  --kuh-shadow: rgba(0, 0, 0, 0.12);
+  --kuh-warning: #b8741f;
+  --kuh-error: #c0392b;
+
+  --kuh-top: 8px;
+  position: fixed;
+  top: var(--kuh-top);
+  right: 12px;
+  left: auto;
+  bottom: auto;
+  z-index: 2147483000;
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--kuh-text);
+  pointer-events: none;
+}
+
+#kimi-usage-hud[data-theme="dark"] {
+  --kuh-bg-from: #1b1f27;
+  --kuh-bg-to: #14171d;
+  --kuh-border: rgba(255, 255, 255, 0.08);
+  --kuh-text: #d7dbe2;
+  --kuh-muted: #6b7480;
+  --kuh-brand: #8b95a3;
+  --kuh-control-bg: #0f1115;
+  --kuh-control-border: #2a2f38;
+  --kuh-shadow: rgba(0, 0, 0, 0.28);
+  --kuh-warning: #e0a83c;
+  --kuh-error: #e0554f;
+}
+
+#kimi-usage-hud * {
+  box-sizing: border-box;
+}
+
+#kimi-usage-hud .kuh-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: auto;
+  max-width: min(1180px, calc(100vw - 24px));
+  min-height: 26px;
+  padding: 4px 10px;
+  background: linear-gradient(180deg, var(--kuh-bg-from) 0%, var(--kuh-bg-to) 100%);
+  border: 1px solid var(--kuh-border);
+  border-radius: 8px;
+  box-shadow: 0 2px 16px var(--kuh-shadow);
+  pointer-events: auto;
+  user-select: none;
+}
+
+#kimi-usage-hud .kuh-drag {
+  border: 0;
+  background: transparent;
+  color: var(--kuh-muted);
+  cursor: ns-resize;
+  padding: 4px 2px;
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: -2px;
+}
+
+#kimi-usage-hud .kuh-brand {
+  color: var(--kuh-brand);
+  opacity: 0.8;
+  white-space: nowrap;
+}
+
+#kimi-usage-hud .kuh-sessions {
+  max-width: 140px;
+  min-width: 88px;
+  background: var(--kuh-control-bg);
+  color: var(--kuh-text);
+  border: 1px solid var(--kuh-control-border);
+  border-radius: 4px;
+  padding: 2px 3px;
+  font: inherit;
+  font-size: 11px;
+  outline: none;
+}
+
+#kimi-usage-hud .kuh-fields {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+#kimi-usage-hud .kuh-field {
+  color: var(--kuh-muted);
+  white-space: nowrap;
+}
+
+#kimi-usage-hud .kuh-theme,
+#kimi-usage-hud .kuh-collapse {
+  border: 0;
+  background: transparent;
+  color: var(--kuh-muted);
+  cursor: pointer;
+  padding: 2px 6px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+#kimi-usage-hud .kuh-collapse {
+  margin-left: 2px;
+}
+
+#kimi-usage-hud[data-state="loading"] .kuh-brand,
+#kimi-usage-hud[data-state="missing"] .kuh-brand,
+#kimi-usage-hud[data-state="prompt"] .kuh-brand {
+  color: var(--kuh-warning);
+}
+
+#kimi-usage-hud[data-state="error"] .kuh-brand {
+  color: var(--kuh-error);
+}
+
+/* 全量档：字段可换行，避免长行被 nowrap 横向裁掉 */
+#kimi-usage-hud[data-view="full"] .kuh-bar {
+  max-width: min(calc(100vw - 24px), 1800px);
+  flex-wrap: wrap;
+}
+#kimi-usage-hud[data-view="full"] .kuh-fields {
+  flex-wrap: wrap;
+  row-gap: 4px;
+  overflow: visible;
+}
+
+/* 关键值档：只隐藏「服务端 TTFT / 均轮耗时」这两个细节字段 */
+#kimi-usage-hud[data-view="key"] .kuh-detail {
+  display: none;
+}
+
+/* 完全缩小档：只留一个胶囊，字段、选择器、品牌与主题按钮隐藏 */
+#kimi-usage-hud[data-view="mini"] .kuh-fields,
+#kimi-usage-hud[data-view="mini"] .kuh-sessions,
+#kimi-usage-hud[data-view="mini"] .kuh-brand,
+#kimi-usage-hud[data-view="mini"] .kuh-theme {
+  display: none;
+}
+
+#kimi-usage-hud[data-view="mini"] .kuh-bar {
+  max-width: 60px;
+  border-radius: 0 8px 8px 8px;
+}

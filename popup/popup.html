@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header>
+    <h1>Kimi 用量 HUD</h1>
+    <p class="sub">无登录 · 只读本地 sessions · 第三方模型通用</p>
+  </header>
+
+  <section class="card" id="status" data-state="loading">
+    <div class="status-row"><span class="dot"></span><span id="status-text">读取中…</span></div>
+    <div class="status-detail" id="status-detail"></div>
+  </section>
+
+  <section class="actions">
+    <button id="connect" class="primary">连接 sessions 目录</button>
+    <button id="rescan">重新扫描</button>
+    <button id="disconnect">断开</button>
+  </section>
+
+  <section class="hint">
+    <p>选择目录：macOS 需按 <kbd>⌘</kbd><kbd>⇧</kbd><kbd>.</kbd> 显示隐藏目录，再选
+    <code>~/.kimi-code</code>（或其 <code>sessions</code> 子目录）。</p>
+    <p>连接后回到 <code>kimi web</code> 页面，底部即出现状态条。</p>
+  </section>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

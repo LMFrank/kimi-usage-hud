@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Kimi Code Usage HUD",
+  "version": "0.1.0",
+  "description": "无登录、第三方模型通用的 Kimi Code 用量状态条：输入/输出/缓存命中/流式 tok·s/解码 TPS。只读本地 sessions 目录，不上传、不调 kimi 账号。",
+  "permissions": ["storage", "nativeMessaging"],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Kimi Code Usage HUD",
+    "default_popup": "popup/popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://127.0.0.1/sessions/*", "http://localhost/sessions/*"],
+      "js": ["src/content.js"],
+      "css": ["styles/hud.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

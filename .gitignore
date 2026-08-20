@@ -1,0 +1,6 @@
+# 安装时生成的 host 启动脚本（含本机 node 绝对路径，不可入库）
+host/host-launcher
+
+# 系统杂项
+.DS_Store
+node_modules/

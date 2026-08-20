@@ -1,0 +1,10 @@
+{
+  "name": "kimi-usage-hud",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "无登录、第三方模型通用的 Kimi Code 用量状态条浏览器扩展",
+  "scripts": {
+    "test": "node --test tests/"
+  }
+}
