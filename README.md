@@ -47,7 +47,7 @@ kimi-code 的 CLI 和 Web UI 都不会直接展示会话的「用量画像」：
    ./host/install.sh <扩展ID>
    ```
 
-   脚本会解析出你本机的 `node` 绝对路径，生成 `host/host-launcher` 并写入 Native Messaging 注册文件。`host-launcher` 是**本机生成物（含本地绝对路径），不要提交**，已列入 `.gitignore`。
+   脚本会生成 `host/host-launcher` 并写入 Native Messaging 注册文件。启动脚本按「nvm default → 安装时的 node → 其它 nvm 版本 → 系统 node」的顺序解析 Node，因此换 Node 版本（nvm 升级/切换）后不会失效；`host-launcher` 是**本机生成物（含本地绝对路径），不要提交**，已列入 `.gitignore`。
 
 3. **彻底退出并重开 Chrome**（Quit，不是关窗口），让 Chrome 重新读取 Native Messaging host。
 4. 打开 kimi 会话页（`http://127.0.0.1:<port>/sessions/<id>` 或 `http://localhost:<port>/sessions/<id>`），右上角即出现状态条。

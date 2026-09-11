@@ -24,6 +24,8 @@ fi
 
 # GUI 启动的 Chrome 没有 shell/nvm 的 PATH，`#!/usr/bin/env node` 会失败；
 # 这里解析出 node 的绝对路径，写进启动脚本，让 Chrome 直接用它来 exec host.mjs。
+# 启动脚本不写死单一版本：nvm 换版本（如 23.x → 22.x）后旧路径消失，
+# 宿主会启动即退出，扩展侧看到的是 “Native host has exited.”。
 NODE_BIN="$(command -v node || true)"
 if [[ -z "${NODE_BIN}" ]]; then
   echo "当前环境找不到 node，无法生成宿主启动脚本" >&2
@@ -32,7 +34,26 @@ fi
 
 cat > "${LAUNCHER}" <<EOF
 #!/bin/sh
-exec "${NODE_BIN}" "${HOST_JS}" "\$@"
+# 由 host/install.sh 生成：按 nvm default → 安装时记录的 node → 其它 nvm 版本 → 系统 node 的顺序解析。
+NODE_BIN=""
+if [ -r "\$HOME/.nvm/alias/default" ]; then
+  NVM_DEFAULT="\$(cat "\$HOME/.nvm/alias/default" 2>/dev/null)"
+  [ -n "\${NVM_DEFAULT}" ] && NODE_BIN="\$HOME/.nvm/versions/node/v\${NVM_DEFAULT}/bin/node"
+fi
+if [ ! -x "\${NODE_BIN}" ]; then
+  for candidate in \\
+    "${NODE_BIN}" \\
+    "\$HOME"/.nvm/versions/node/*/bin/node \\
+    /opt/homebrew/bin/node \\
+    /usr/local/bin/node; do
+    if [ -x "\${candidate}" ]; then NODE_BIN="\${candidate}"; break; fi
+  done
+fi
+if [ ! -x "\${NODE_BIN}" ]; then
+  echo "kimi-usage-hud: 找不到可用的 node，请重跑 host/install.sh" >&2
+  exit 127
+fi
+exec "\${NODE_BIN}" "${HOST_JS}" "\$@"
 EOF
 chmod +x "${LAUNCHER}"
 
