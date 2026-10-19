@@ -30,6 +30,12 @@
   pointer-events: none;
 }
 
+/* 桌面客户端（Electron 自定义标题栏）：页面视口从窗口顶部开始，标签条高约 44px，
+   默认的 8px 会压住标签；由 desktop/loader.js 设 data-kuh-desktop 后下移。 */
+html[data-kuh-desktop] #kimi-usage-hud {
+  --kuh-top: 48px;
+}
+
 #kimi-usage-hud[data-theme="dark"] {
   --kuh-bg-from: #1b1f27;
   --kuh-bg-to: #14171d;

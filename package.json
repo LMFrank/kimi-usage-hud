@@ -1,10 +1,11 @@
 {
   "name": "kimi-usage-hud",
-  "version": "0.1.1",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
-  "description": "无登录、第三方模型通用的 Kimi Code 用量状态条浏览器扩展",
+  "description": "无登录、第三方模型通用的 Kimi Code 用量状态条（浏览器扩展 + 桌面客户端补丁）",
   "scripts": {
-    "test": "node --test \"tests/**/*.test.mjs\""
+    "test": "node --test \"tests/**/*.test.mjs\"",
+    "check": "node --check desktop/loader.js && node --check desktop/fold.js && node --check desktop/hud-app.js && node --check desktop/install.mjs && node --check desktop/verify.mjs"
   }
 }
