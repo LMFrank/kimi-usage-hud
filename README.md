@@ -1,6 +1,6 @@
 # Kimi Code Usage HUD
 
-> 直接下载：[kimi-usage-hud-0.1.1.zip](https://github.com/LMFrank/kimi-usage-hud/releases/download/0.1.1/kimi-usage-hud-0.1.1.zip)
+> 直接下载：[kimi-usage-hud-0.2.1.zip](https://github.com/LMFrank/kimi-usage-hud/releases/download/0.2.1/kimi-usage-hud-0.2.1.zip)（浏览器扩展） ｜ 桌面补丁：[kimi-usage-hud-desktop-0.2.1.zip](https://github.com/LMFrank/kimi-usage-hud/releases/download/0.2.1/kimi-usage-hud-desktop-0.2.1.zip)
 
 给 kimi-code 的 Web UI 加一条**会话用量状态条**：不用登录、不用调 Kimi 账号，只读本地 `~/.kimi-code/sessions`，把当前会话的 token、耗时、缓存、TTFT、TPS 折叠成一行，实时显示在页面右上角。同一状态条也能装进 **Kimi Code 桌面客户端**（见「桌面客户端」一节），那一侧直接读客户端本地 API。
 
@@ -62,6 +62,8 @@ kimi-code 的 CLI 和 Web UI 都不会直接展示会话的「用量画像」：
 
 同一条状态条可以直接注入 Kimi Code 桌面客户端（Electron）的页面，不需要浏览器扩展、
 不需要 Native Messaging host：数据改从**客户端自己的本地 REST API** 读取。
+
+> 只装面板、不下载仓库：从 Releases 下载 `kimi-usage-hud-desktop-0.2.1.zip`，解压后在同一目录执行 `bash desktop/install.sh`（与仓库内安装方式一致）。
 
 ```bash
 bash desktop/install.sh                                         # 安装/更新（幂等，可反复执行）
@@ -147,3 +149,7 @@ popup/        目录授权的备用弹窗（Native host 失败时的 FSA 回退�
 tests/        折叠语义单测（wire 解析 + 桌面端消息折叠）
 screenshots/  README 截图
 ```
+
+## 版本历史
+
+见 [CHANGELOG.md](CHANGELOG.md)。
