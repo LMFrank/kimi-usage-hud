@@ -6,28 +6,29 @@
 // content.js 的差异是数据来自本地 API 而非 Native Messaging，且不使用 chrome.*。
 //
 // 时序：切会话时用 before_turn 自上而下补齐整会话（先渲染最新页，旧页后台逐页
-// 补，边补边更新），之后每 2s 重拉最新一页（进行中的轮会被覆盖更新，fold.js 按
-// turnId/stepId 覆盖，不会重复计数）；子 agent 的 token 每 15s 各取一次
-// meta.agent.usage；路由由 1s 轮询跟随。
+// 补，边补边更新）；main 补完再对每个子 agent 分页补齐（20 页上限），之后每 2s
+// 重拉 main 最新页（进行中的轮会被覆盖更新，fold.js 按 turnId/stepId 覆盖，不会
+// 重复计数）、每 15s 重拉各子 agent 最新页；路由由 1s 轮询跟随。
 //
 // 用 transcript 而不是 messages 的原因见 fold.js 头部：只有 transcript 的
 // step 带 usage 与 llmTiming（与 wire.jsonl 的 step.end 字段一致）。
 
 import { formatPercentage, formatTokenCount } from '../src/metrics.js';
-import { emptyFold, foldAgentUsage, foldTranscript, summarizeFold } from './fold.js';
+import { emptyFold, foldAgentTranscript, foldTranscript, summarizeFold } from './fold.js';
 
 const ROUTE_POLL_MS = 1000;
 const POLL_MS = 2000;
-const SUBAGENT_USAGE_MS = 15_000; // 子 agent 用量刷新节拍（只在跑动时才变，不必每 2s 拉）
+const SUBAGENT_REFRESH_MS = 15_000; // 子 agent 刷新节拍（只在跑动时才变，不必每 2s 拉）
 const AGENT_ID = 'main';
 // transcript 每页按「轮」计（服务端 paginateTurns 取 segments），page_size 上限 100。
-// 回填：先拉最新一页立即渲染，再逐页向更早补，直到 has_more=false（上限 50 页，
-// 防呆）；轮询只重拉最新 2 轮，避免每 2s 搬整段会话（响应里带 tool frame 的完整
-// 输入输出）。子 agent 只取 page_size=1 读 meta.agent.usage（token 汇总，见 fold.js）。
+// 回填：先拉最新一页立即渲染，再逐页向更早补，直到 has_more=false（main 上限 50 页、
+// 子 agent 20 页，防呆）；轮询只重拉最新 2 轮，避免每 2s 搬整段会话（响应里带
+// tool frame 的完整输入输出）。子 agent 按同样的页大小分页回填，token 取步骤 usage。
 const BACKFILL_PAGE_SIZE = 20;
 const BACKFILL_MAX_PAGES = 50;
+const SUBAGENT_MAX_PAGES = 20;
 const REFRESH_PAGE_SIZE = 2;
-const AGENT_USAGE_PAGE_SIZE = 1;
+const SUBAGENT_REFRESH_PAGE_SIZE = 20;
 const DEFAULT_TOP_PX = 8;
 const VIEWS = ['full', 'key', 'mini'];
 const VIEW_LABELS = { full: '全量显示', key: '关键值', mini: '完全缩小' };
@@ -56,7 +57,7 @@ let generation = 0;
 let state = emptyFold();
 let rosterAgents = new Set(); // 当前会话的 agent roster（含 main）
 let backfillDone = false;
-let lastAgentUsageAt = 0;
+let lastAgentRefreshAt = 0;
 let status = { kind: 'loading', text: '读取中…' };
 
 function readStored(key, fallback) {
@@ -163,23 +164,48 @@ async function fetchTranscript(sid, params) {
   return { data, hasMore: data.has_more === true };
 }
 
-// 子 agent 的 token：每个 roster agent 取一次 page_size=1 的响应读 meta.agent.usage
-// （字段与 wire 的 usage.record 同名，实测与各 agent 的 wire 折叠逐项一致）。
-// 失败不打断主折叠：该 agent 本轮不计入，下一拍再试。
-async function refreshAgentUsage(sid, gen) {
-  if (gen !== generation) return;
+// 子 agent 的一页 transcript 折叠进它自己的状态（轮/步只读 main，token 取步骤 usage）。
+function collectRoster(data) {
+  for (const agent of Array.isArray(data?.agents) ? data.agents : []) {
+    if (typeof agent?.agentId === 'string' && agent.agentId) rosterAgents.add(agent.agentId);
+  }
+}
+
+// 子 agent 首次出现时补齐它的整段历史：page_size=20，before_turn 翻页到
+// has_more=false 或 20 页上限；每折一页重绘一次，token 随着补齐增长。
+async function backfillAgent(sid, agentId, gen) {
+  let beforeTurn = '';
+  for (let page = 0; page < SUBAGENT_MAX_PAGES; page += 1) {
+    const { data, hasMore } = await fetchTranscript(sid, {
+      agentId,
+      pageSize: BACKFILL_PAGE_SIZE,
+      beforeTurn
+    });
+    if (gen !== generation) return;
+    const turns = data.items.filter((item) => item?.kind === 'turn');
+    if (turns.length === 0) return;
+    foldAgentTranscript(state, agentId, data);
+    refresh();
+    const oldest = turns[0].turnId;
+    if (!hasMore || !oldest || oldest === beforeTurn) return;
+    beforeTurn = oldest;
+  }
+}
+
+// 15s 刷新：每个子 agent 只重拉最新一页（进行中的轮整轮覆盖），不翻旧页。
+async function refreshAgents(sid, gen) {
   const roster = [...rosterAgents].filter((id) => id !== AGENT_ID);
   if (roster.length === 0) return;
   const results = await Promise.all(roster.map(async (agentId) => {
     try {
-      const { data } = await fetchTranscript(sid, { agentId, pageSize: AGENT_USAGE_PAGE_SIZE });
+      const { data } = await fetchTranscript(sid, { agentId, pageSize: SUBAGENT_REFRESH_PAGE_SIZE });
       return { agentId, data };
     } catch (error) {
       return { agentId, data: null };
     }
   }));
   if (gen !== generation) return;
-  for (const { agentId, data } of results) if (data) foldAgentUsage(state, agentId, data);
+  for (const { agentId, data } of results) if (data) foldAgentTranscript(state, agentId, data);
 }
 
 // 回填：不带游标的一页是「最新若干轮」（升序），先折先渲染，再用最旧一轮的
@@ -193,12 +219,7 @@ async function backfill(sid, gen) {
     const turns = data.items.filter((item) => item?.kind === 'turn');
     if (turns.length === 0) return;
     foldTranscript(state, data);
-    // roster（agents）随任一页返回，碾平后用于子 agent 用量收集。
-    for (const agent of Array.isArray(data.agents) ? data.agents : []) {
-      if (typeof agent?.agentId === 'string' && agent.agentId) rosterAgents.add(agent.agentId);
-    }
-    if (page === 0) await refreshAgentUsage(sid, gen);
-    if (gen !== generation) return;
+    collectRoster(data); // roster 随任一页返回，用于后续子 agent 回填/刷新
     backfillDone = true; // 已有最新页，可以开始轮询
     refresh();
     const oldest = turns[0].turnId;
@@ -207,8 +228,17 @@ async function backfill(sid, gen) {
   }
 }
 
+// 按 roster 补齐所有子 agent 的历史（main 回填完成后调用）。
+async function backfillAgents(sid, gen) {
+  for (const agentId of [...rosterAgents]) {
+    if (agentId === AGENT_ID) continue;
+    await backfillAgent(sid, agentId, gen);
+    if (gen !== generation) return;
+  }
+}
+
 // 增量：每轮重拉最新一页（进行中的轮会被整轮覆盖更新），没有游标状态；
-// 子 agent 用量按更慢的节拍刷新。
+// 子 agent 按更慢的节拍重拉各自最新一页。
 async function poll() {
   if (!sessionId || !backfillDone) return;
   const gen = generation;
@@ -216,10 +246,11 @@ async function poll() {
     const { data } = await fetchTranscript(sessionId, { pageSize: REFRESH_PAGE_SIZE });
     if (gen !== generation) return;
     foldTranscript(state, data);
+    collectRoster(data);
     const now = Date.now();
-    if (now - lastAgentUsageAt >= SUBAGENT_USAGE_MS) {
-      lastAgentUsageAt = now;
-      await refreshAgentUsage(sessionId, gen);
+    if (now - lastAgentRefreshAt >= SUBAGENT_REFRESH_MS) {
+      lastAgentRefreshAt = now;
+      await refreshAgents(sessionId, gen);
       if (gen !== generation) return;
     }
   } catch (error) {
@@ -238,7 +269,7 @@ async function switchSession(nextId) {
   state = emptyFold();
   rosterAgents = new Set();
   backfillDone = false;
-  lastAgentUsageAt = 0;
+  lastAgentRefreshAt = 0;
 
   if (!nextId) {
     status = { kind: 'loading', text: '无会话' };
@@ -250,13 +281,16 @@ async function switchSession(nextId) {
   paint();
   try {
     await backfill(nextId, gen);
+    if (gen !== generation) return;
+    await backfillAgents(nextId, gen);
+    if (gen !== generation) return;
+    lastAgentRefreshAt = Date.now(); // 子 agent 刚补完，下一次 15s 刷新不用立刻重拉
   } catch (error) {
     if (gen !== generation) return;
     status = { kind: 'error', text: error.message };
     paint();
     return;
   }
-  if (gen !== generation) return;
   backfillDone = true;
   refresh();
 }

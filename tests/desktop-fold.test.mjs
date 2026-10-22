@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { emptyFold, foldAgentUsage, foldTranscript, summarizeFold } from '../desktop/fold.js';
+import { emptyFold, foldAgentTranscript, foldTranscript, summarizeFold } from '../desktop/fold.js';
 
 // fixture 形状取自客户端 /api/v1/sessions/<sid>/transcript 的实测响应：
 // data.items 是「轮」，每轮的 steps[] 带 usage 与 llmTiming（字段与 wire.jsonl
@@ -137,7 +137,7 @@ test('分页回填与最新页重叠时按 turnId 覆盖：先折新页再折旧
   assert.equal(newestFirst.avgTurnMs, 2500);
 });
 
-test('服务端 TTFT 与解码耗时缺席：不计入平均值，也不虚增', () => {
+test('服务端计时样本不足一半：均值置空，解码 TPS 退回流式口径', () => {
   const state = foldTranscript(emptyFold(), payload([
     turn('t0', [
       step('t0-0', { usage: usage(1, 10), llmTiming: { llmFirstTokenLatencyMs: 300, llmStreamDurationMs: 700 } }),
@@ -149,10 +149,10 @@ test('服务端 TTFT 与解码耗时缺席：不计入平均值，也不虚增',
   ]));
 
   const s = summarizeFold(state);
-  assert.equal(s.avgTtftMs, 300);
-  assert.equal(s.avgServerTtftMs, 1200); // 只由带该字段的那一步决定
-  assert.equal(s.decodeTokPerSec, 7); // 只有第二步有 decodeMs：10 tok / 1.4 s
-  assert.equal(s.streamTokPerSec, 14); // 两步都在样本里：20 tok / 1.4 s
+  assert.equal(s.avgTtftMs, 300); // 客户端 TTFT 覆盖率 100%，不受影响
+  assert.equal(s.avgServerTtftMs, null); // 1/2 = 50% < 90%
+  assert.equal(s.decodeTokPerSec, s.streamTokPerSec); // 解码样本不足 → 流式口径
+  assert.equal(s.streamTokPerSec, 14); // 20 tok / 1.4 s
 });
 
 test('都为无值的耗时字段不进样本，也不显示 0', () => {
@@ -251,14 +251,10 @@ test('空数据：无轮无步，供状态条显示「无数据」', () => {
   assert.equal(s.cacheHitRate, null);
 });
 
-// meta.agent.usage.total 的形状与取值取自客户端实测响应（与各 agent 的 wire
-// 折叠逐项一致）：{ inputOther, output, inputCacheRead, inputCacheCreation }。
-const agentTotalPayload = (total, model = 'kimi-k3') => ({
-  items: [],
-  meta: { agent: { model, usage: { total } } }
-});
+// 子 agent 的 transcript 页：与 main 同构（items 是「轮」，steps 带 usage/llmTiming）。
+const agentPage = (turns, model = 'kimi-k3') => ({ items: turns, has_more: false, meta: { agent: { model } } });
 
-test('子 agent 的 token 从 meta.agent.usage.total 汇总，main 仍按逐步折叠（不重复计入）', () => {
+test('子 agent 的 token 按步骤 usage 折叠：多 agent 求和，轮/步仍只算 main', () => {
   const state = foldTranscript(emptyFold(), payload([
     turn('t0', [
       step('t0-0', { usage: usage(100, 10, 900, 0), llmTiming: { llmFirstTokenLatencyMs: 100, llmStreamDurationMs: 400 } })
@@ -268,38 +264,108 @@ test('子 agent 的 token 从 meta.agent.usage.total 汇总，main 仍按逐步�
   assert.equal(mainOnly.input, 1000); // 100 + 900
   assert.equal(mainOnly.agentCount, 0);
 
-  // main 自己的 meta.usage 也回传（实际请求里它会随每页返回）：不得重复计入
-  assert.equal(foldAgentUsage(state, 'main', agentTotalPayload({ inputOther: 100, output: 10, inputCacheRead: 900, inputCacheCreation: 0 })), true);
-  const stillMainOnly = summarizeFold(state);
-  assert.equal(stillMainOnly.input, mainOnly.input);
-  assert.equal(stillMainOnly.output, mainOnly.output);
-  assert.equal(stillMainOnly.agentCount, 0);
+  // main 的页不得走子 agent 通道（否则 token 双计）
+  assert.equal(foldAgentTranscript(state, 'main', agentPage([])), false);
+  assert.equal(foldAgentTranscript(state, '', agentPage([])), false);
 
-  // 两个子 agent：token 累加，轮/步/耗时不受影响
-  foldAgentUsage(state, 'agent-1', agentTotalPayload({ inputOther: 50, output: 20, inputCacheRead: 150, inputCacheCreation: 0 }));
-  foldAgentUsage(state, 'agent-2', agentTotalPayload({ inputOther: 5, output: 2, inputCacheRead: 45, inputCacheCreation: 5 }));
+  assert.equal(foldAgentTranscript(state, 'agent-1', agentPage([
+    turn('t0', [
+      step('t0-0', { usage: usage(50, 20, 150, 0) }),
+      step('t0-1', { usage: usage(30, 5, 20, 0) })
+    ], 2_000)
+  ])), true);
+  assert.equal(foldAgentTranscript(state, 'agent-2', agentPage([
+    turn('t0', [step('t0-0', { usage: usage(5, 2, 45, 5) })], 1_000)
+  ])), true);
+
   const all = summarizeFold(state);
   assert.equal(all.agentCount, 2);
-  assert.equal(all.input, 1000 + 200 + 55); // main 1000 + agent-1 (50+150) + agent-2 (5+45+5)
-  assert.equal(all.output, 10 + 20 + 2);
-  assert.equal(all.turns, 1);
+  assert.equal(all.input, 1000 + (50 + 150) + (30 + 20) + (5 + 45 + 5));
+  assert.equal(all.output, 10 + 20 + 5 + 2);
+  assert.equal(all.turns, 1); // 轮/步/耗时只算 main（子 agent 的 t0 不与之合并）
   assert.equal(all.steps, 1);
   assert.equal(all.llmMs, 500);
-  assert.equal(all.cacheHitRate, (900 + 150 + 45) / (1000 + 200 + 55) * 100);
+  assert.equal(all.cacheHitRate, (900 + 150 + 20 + 45) / all.input * 100);
 });
 
-test('子 agent 用量缺字段/缺 total 时该 agent 不计入，且不影响已有汇总', () => {
-  const state = emptyFold();
-  assert.equal(foldAgentUsage(state, 'agent-1', { items: [], meta: { agent: {} } }), false);
-  assert.equal(foldAgentUsage(state, 'agent-1', { items: [], meta: { agent: { usage: {} } } }), false);
-  assert.equal(foldAgentUsage(state, '', agentTotalPayload({ output: 1 })), false);
-  foldAgentUsage(state, 'agent-1', agentTotalPayload({ inputOther: 7, output: 3, inputCacheRead: 0, inputCacheCreation: 0 }));
-  assert.equal(summarizeFold(state).agentCount, 1);
-  assert.equal(summarizeFold(state).input, 7);
-  // 同一 agent 再拉一次：覆盖而非累加
-  foldAgentUsage(state, 'agent-1', agentTotalPayload({ inputOther: 70, output: 30, inputCacheRead: 0, inputCacheCreation: 0 }));
-  assert.equal(summarizeFold(state).input, 70);
-  assert.equal(summarizeFold(state).agentCount, 1);
+test('子 agent 多页合并与重复页覆盖：与一次性折叠等价，无 usage 的步跳过', () => {
+  const page1 = [turn('t2', [step('t2-0', { usage: usage(2, 2) })], 2_000)];
+  const page2 = [
+    turn('t1', [
+      step('t1-0', { usage: usage(1, 1) }),
+      step('t1-1', {}) // 进行中的步：无 usage / 无耗时，不计
+    ], 1_000)
+  ];
+
+  const paged = emptyFold();
+  foldAgentTranscript(paged, 'agent-1', agentPage(page1));
+  foldAgentTranscript(paged, 'agent-1', agentPage(page2));
+  foldAgentTranscript(paged, 'agent-1', agentPage(page1)); // 重拉最新页：覆盖而非累加
+
+  const oneShot = emptyFold();
+  foldAgentTranscript(oneShot, 'agent-1', agentPage([...page2, ...page1]));
+
+  assert.deepEqual(summarizeFold(paged), summarizeFold(oneShot));
+  const s = summarizeFold(paged);
+  assert.equal(s.agentCount, 1);
+  assert.equal(s.input, 3);
+  assert.equal(s.output, 3);
+  assert.equal(s.turns, 0); // 子 agent 不计轮
+  assert.equal(s.steps, 0);
+
+  // 只有空页的 agent 不算「有步骤」
+  foldAgentTranscript(paged, 'agent-empty', agentPage([]));
+  assert.equal(summarizeFold(paged).agentCount, 1);
+});
+
+test('服务端 TTFT 覆盖率 ≥90% 才给均值，样本不足时返回 null', () => {
+  const coveragePayload = (withServer) => payload([
+    turn('t0', Array.from({ length: 10 }, (_, i) => {
+      const timing = { llmFirstTokenLatencyMs: 100, llmStreamDurationMs: 1000 };
+      if (i < withServer) {
+        timing.llmServerFirstTokenMs = 200;
+        timing.llmServerDecodeMs = 500;
+      }
+      return step(`t0-${i}`, {
+        usage: usage(1, 10),
+        llmTiming: timing,
+        endedAt: new Date(Date.parse('2026-10-16T10:00:00.000Z') + i * 1000).toISOString()
+      });
+    }), 10_000)
+  ]);
+
+  const full = summarizeFold(foldTranscript(emptyFold(), coveragePayload(10)));
+  assert.equal(full.avgServerTtftMs, 200);
+
+  const edge = summarizeFold(foldTranscript(emptyFold(), coveragePayload(9))); // 9/10 = 90%
+  assert.equal(edge.avgServerTtftMs, 200);
+
+  const sparse = summarizeFold(foldTranscript(emptyFold(), coveragePayload(8))); // 8/10 = 80%
+  assert.equal(sparse.avgServerTtftMs, null);
+  assert.equal(sparse.avgTtftMs, 100); // 客户端 TTFT 不受覆盖率守卫影响
+});
+
+test('解码 TPS：样本覆盖率 ≥90% 用解码口径，否则退回流式口径', () => {
+  // 10 步、每步 output 10：流式 1000ms → 10 tok/s；解码 500ms（前 N 步）→ 20 tok/s
+  const build = (withDecode) => payload([
+    turn('t0', Array.from({ length: 10 }, (_, i) => {
+      const timing = { llmFirstTokenLatencyMs: 100, llmStreamDurationMs: 1000 };
+      if (i < withDecode) timing.llmServerDecodeMs = 500;
+      return step(`t0-${i}`, {
+        usage: usage(1, 10),
+        llmTiming: timing,
+        endedAt: new Date(Date.parse('2026-10-16T10:00:00.000Z') + i * 1000).toISOString()
+      });
+    }), 10_000)
+  ]);
+
+  const covered = summarizeFold(foldTranscript(emptyFold(), build(9))); // 90%
+  assert.equal(covered.streamTokPerSec, 10);
+  assert.equal(covered.decodeTokPerSec, 20); // 90 tok / 4.5 s
+
+  const sparse = summarizeFold(foldTranscript(emptyFold(), build(5))); // 50%
+  assert.equal(sparse.decodeTokPerSec, sparse.streamTokPerSec); // 回退
+  assert.equal(sparse.decodeTokPerSec, 10);
 });
 
 test('整会话分页补齐：逐页折叠与一次性折叠等价，跨页重复覆盖不重复计数', () => {

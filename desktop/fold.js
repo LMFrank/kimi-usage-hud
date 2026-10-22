@@ -20,9 +20,11 @@
 //   1. 工具耗时不可得：transcript 的 tool frame 只有 state/output，没有时间戳，
 //      无法做 tool.call → tool.result 配对；状态条该字段显示「–」。
 //      （/messages 的 created_at 是消息开始时间，配对比 wire 大 2.3 倍，不可用。）
-//   2. 轮/步/耗时按 wire 口径只算 main；token 是 main 的逐步折叠加其余 agent 的
-//      meta.agent.usage.total（各自都与 wire 逐项一致），子 agent 缺该字段时不计入。
-//   3. 折叠范围 = 已拉到的页（hud-app.js 自上而下补齐整会话，上限见该文件）。
+//   2. 轮/步/耗时按 wire 口径只算 main；token 是 main 与各子 agent 的逐步 usage
+//      之和（子 agent 单独折叠，见 foldAgentTranscript）。
+//   3. 1.1.1 的 transcript 投影只带少量服务端计时样本（实测 3/176 步），
+//      avgServerTtftMs / 解码 TPS 都加了样本覆盖率守卫，见 summarizeFold。
+//   4. 折叠范围 = 已拉到的页（hud-app.js 自上而下补齐整会话，上限见该文件）。
 
 import {
   aggregateSpeed,
@@ -33,6 +35,7 @@ import {
 
 const RECENT_CAP = 16; // 最近步数样本上限，与 src/cli-reader.js 一致
 const MAIN_AGENT_ID = 'main'; // 客户端主 agent 固定 id；其余 id 都是子 agent
+const MIN_SAMPLE_COVERAGE = 0.9; // 服务端计时/解码耗时的样本覆盖率下限
 
 function toPositiveMs(value) {
   const n = Number(value);
@@ -70,17 +73,20 @@ export function emptyFold() {
   return {
     turns: new Map(), // turnId → { durationMs, steps: Map<stepId, 步指标> }
     model: '',
-    agentUsage: new Map() // agentId → 该 agent 的会话累计用量（meta.agent.usage.total）
+    agents: new Map() // agentId → 与 main 同构的子状态 { turns, model }
   };
 }
 
-// 子 agent 的 token 只从 meta.agent.usage.total 取（一次请求即可，不必翻页）；
-// 其字段与 wire 的 usage.record 同名同义，实测与各 agent 的 wire 折叠逐项一致。
-export function foldAgentUsage(state, agentId, payload) {
-  const total = payload?.meta?.agent?.usage?.total;
-  if (typeof agentId !== 'string' || !agentId) return false;
-  if (!total || typeof total !== 'object') return false;
-  state.agentUsage.set(agentId, normalizeUsage(total));
+// 子 agent 的 token 用与 main 相同的逐步折叠：每个子 agent 一个独立状态，
+// 分页/刷新都走 foldTranscript（turnId 整轮覆盖、stepId 步内覆盖）。
+export function foldAgentTranscript(state, agentId, payload) {
+  if (typeof agentId !== 'string' || !agentId || agentId === MAIN_AGENT_ID) return false;
+  let agent = state.agents.get(agentId);
+  if (!agent) {
+    agent = { turns: new Map(), model: '' };
+    state.agents.set(agentId, agent);
+  }
+  foldTranscript(agent, payload);
   return true;
 }
 
@@ -116,6 +122,7 @@ export function summarizeFold(state) {
   let turns = 0;
   let steps = 0;
   let timingSteps = 0;
+  let decodeSteps = 0;
   let llmMs = 0;
   let ttftMs = 0;
   let ttftSteps = 0;
@@ -147,6 +154,7 @@ export function summarizeFold(state) {
         serverTtftMs += step.serverTtftMs;
         serverTtftSteps += 1;
       }
+      if (step.decodeMs > 0) decodeSteps += 1;
       inputOther += step.inputOther;
       output += step.output;
       cacheRead += step.cacheRead;
@@ -159,19 +167,27 @@ export function summarizeFold(state) {
   const samples = recent.slice(0, RECENT_CAP);
   const lastStep = samples[0] || null;
 
-  // 子 agent 的 token 从 meta.agent.usage.total 汇总（wire 口径是 token 聚合所有
-  // agent、轮/步只算 main）；main 自己不走这里，避免与上面的逐步折叠重复计入。
+  // 子 agent 的 token 同样按 step.usage 逐项累加（与 main 同口径）；轮/步/耗时
+  // 仍只取 main，符合 wire「token 聚合所有 agent、轮/步只算 main」。
   let agentCount = 0;
-  for (const [agentId, agentUsage] of state.agentUsage) {
-    if (agentId === MAIN_AGENT_ID) continue;
-    agentCount += 1;
-    inputOther += agentUsage.inputOther;
-    output += agentUsage.output;
-    cacheRead += agentUsage.cacheRead;
-    cacheCreation += agentUsage.cacheCreation;
+  for (const agent of state.agents.values()) {
+    let agentSteps = 0;
+    for (const turn of agent.turns.values()) {
+      for (const step of turn.steps.values()) {
+        agentSteps += 1;
+        inputOther += step.inputOther;
+        output += step.output;
+        cacheRead += step.cacheRead;
+        cacheCreation += step.cacheCreation;
+      }
+    }
+    if (agentSteps > 0) agentCount += 1;
   }
 
   const usage = { inputOther, cacheRead, cacheCreation };
+  const serverTtftCoverage = steps > 0 ? serverTtftSteps / steps : 0;
+  const decodeCoverage = steps > 0 ? decodeSteps / steps : 0;
+  const streamTokPerSec = aggregateSpeed(samples, 'streamMs');
 
   return {
     model: state.model,
@@ -179,17 +195,25 @@ export function summarizeFold(state) {
     turns,
     steps,
     timingSteps, // 带 llmTiming 的步数：为 0 时状态条提示「无耗时元数据」
-    agentCount, // 计入 token 的子 agent 数（0 表示本会话没有子 agent）
+    agentCount, // 有步骤的子 agent 数（0 表示本会话没有子 agent）
     llmMs,
     toolMs: null, // transcript 无工具时间戳，见文件头差异说明 1
     avgTtftMs: ttftSteps > 0 ? Math.round(ttftMs / ttftSteps) : null,
-    avgServerTtftMs: serverTtftSteps > 0 ? Math.round(serverTtftMs / serverTtftSteps) : null,
+    // 1.1.1 的投影只带少量服务端首 token 样本（实测 3/176），直接平均会被异常
+    // 大值带偏；覆盖率不足 90% 时不给值，状态条渲染为「–」。
+    avgServerTtftMs: serverTtftCoverage >= MIN_SAMPLE_COVERAGE
+      ? Math.round(serverTtftMs / serverTtftSteps)
+      : null,
     avgTurnMs: timedTurns > 0 ? Math.round(turnMs / timedTurns) : null,
     input: totalInputTokens(usage),
     output,
     cacheHitRate: cacheHitRate(usage),
-    streamTokPerSec: aggregateSpeed(samples, 'streamMs'),
-    decodeTokPerSec: aggregateSpeed(samples, 'decodeMs'),
+    streamTokPerSec,
+    // 解码 TPS 同理：服务端解码耗时样本不足时退回流式口径——wire 里两者是同一段
+    // 流式窗口（llmStreamDurationMs / llmServerDecodeMs），样本充分时数值一致。
+    decodeTokPerSec: decodeCoverage >= MIN_SAMPLE_COVERAGE
+      ? aggregateSpeed(samples, 'decodeMs')
+      : streamTokPerSec,
     lastTtftMs: lastStep ? lastStep.ttftMs : null
   };
 }

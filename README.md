@@ -1,6 +1,6 @@
 # Kimi Code Usage HUD
 
-> 直接下载：[kimi-usage-hud-0.2.1.zip](https://github.com/LMFrank/kimi-usage-hud/releases/download/0.2.1/kimi-usage-hud-0.2.1.zip)（浏览器扩展） ｜ 桌面补丁：[kimi-usage-hud-desktop-0.2.1.zip](https://github.com/LMFrank/kimi-usage-hud/releases/download/0.2.1/kimi-usage-hud-desktop-0.2.1.zip)
+> 直接下载：[kimi-usage-hud-0.2.2.zip](https://github.com/LMFrank/kimi-usage-hud/releases/download/0.2.2/kimi-usage-hud-0.2.2.zip)（浏览器扩展） ｜ 桌面补丁：[kimi-usage-hud-desktop-0.2.2.zip](https://github.com/LMFrank/kimi-usage-hud/releases/download/0.2.2/kimi-usage-hud-desktop-0.2.2.zip)
 
 给 kimi-code 的 Web UI 加一条**会话用量状态条**：不用登录、不用调 Kimi 账号，只读本地 `~/.kimi-code/sessions`，把当前会话的 token、耗时、缓存、TTFT、TPS 折叠成一行，实时显示在页面右上角。同一状态条也能装进 **Kimi Code 桌面客户端**（见「桌面客户端」一节），那一侧直接读客户端本地 API。
 
@@ -63,7 +63,7 @@ kimi-code 的 CLI 和 Web UI 都不会直接展示会话的「用量画像」：
 同一条状态条可以直接注入 Kimi Code 桌面客户端（Electron）的页面，不需要浏览器扩展、
 不需要 Native Messaging host：数据改从**客户端自己的本地 REST API** 读取。
 
-> 只装面板、不下载仓库：从 Releases 下载 `kimi-usage-hud-desktop-0.2.1.zip`，解压后在同一目录执行 `bash desktop/install.sh`（与仓库内安装方式一致）。
+> 只装面板、不下载仓库：从 Releases 下载 `kimi-usage-hud-desktop-0.2.2.zip`，解压后在同一目录执行 `bash desktop/install.sh`（与仓库内安装方式一致）。
 
 ```bash
 bash desktop/install.sh                                         # 安装/更新（幂等，可反复执行）
@@ -76,15 +76,15 @@ bash desktop/install.sh --app "/Applications/Kimi Code.app"      # 指定客户�
 ### 数据来源
 
 - 页面地址 `/sessions/<sid>` 决定跟随哪个会话：切会话时先拉最新一页立即出数，
-  再用 `before_turn` 逐页向更早补齐**整会话**（20 轮/页，最多 50 页防呆），
-  边补边更新；之后每 2s 重拉最新一页（默认 2 轮），进行中的轮会被整轮覆盖更新，
-  不会重复计数。
+  再用 `before_turn` 逐页向更早补齐**整会话**（20 轮/页，main 最多 50 页、每个子
+  agent 最多 20 页防呆），边补边更新；之后每 2s 重拉 main 最新一页（默认 2 轮），
+  进行中的轮会被整轮覆盖更新，不会重复计数。
 - 指标来自 `GET /api/v1/sessions/<sid>/transcript?agent_id=main`（客户端自己的会话视图
   用的就是这个接口）：transcript 的 item 是「轮」，每轮的 `steps[]` 直接带 `usage` 与
   `llmTiming`——字段与 wire.jsonl 的 `step.end` 逐项对齐，所以折算口径与扩展版一致。
-- 子 agent 的 token 另取：roster（响应里的 `agents`）中每个非 main agent 每 15s 取一次
-  `page_size=1` 的 transcript，读 `meta.agent.usage.total` 汇总（该字段与 wire 的
-  `usage.record` 同名同义，实测与各 agent 的 wire 折叠逐项一致）。
+- 子 agent 的 token 用**同一口径**：roster（响应里的 `agents`）里每个非 main agent
+  各自分页拉 transcript 并折叠 `step.usage`；每 15s 再重拉各自最新一页覆盖更新。
+  （1.1.1 起子 agent 的 `meta.agent.usage.total` 为 null，不再使用。）
 - 请求都打向客户端自己的本地服务（同源，鉴权头由客户端自己注入），页面脚本不带任何凭据：
   不读账号、不读 localStorage 里的凭据、没有任何外部网络请求。
 - 主题与显示档位记在页面 localStorage 的 `kuh.*` 键上；无会话、请求失败、无数据
@@ -97,16 +97,19 @@ bash desktop/install.sh --app "/Applications/Kimi Code.app"      # 指定客户�
 | 轮 / 步 | transcript 的 turn / step：一步一条 `step`，`turnId` 去重即一轮 | 与 wire 的 distinct `turnId`、`step.end` 一致；transcript 只收录**产生过消息**的轮，wire 里没产出消息的轮不会出现在面板 |
 | LLM 耗时 | Σ(客户端首 token + 流式时长) | 与 wire 一致 |
 | 每轮耗时 | `turn.durationMs` | 与 wire 的 `turn.ended.durationMs` 同源；未结束的轮没有该字段，不计入均轮 |
-| 服务端 TTFT | `step.llmTiming.llmServerFirstTokenMs`，缺席时不计入、显示 `–` | 与 wire 同名字段 |
+| 服务端 TTFT | `step.llmTiming.llmServerFirstTokenMs` 的均值，且要求**样本覆盖率 ≥ 90%** | 1.1.1 的投影只带少量服务端计时样本（实测 3/176），直接平均会被异常大值带偏，因此覆盖率不足时显示 `–` |
+| 解码 TPS | `llmServerDecodeMs` 聚合，样本覆盖率 ≥ 90%；否则退回流式口径 | 两者都是同一段流式窗口的耗时（`llmServerDecodeMs` / `llmStreamDurationMs`），样本充分时数值一致 |
 | 工具耗时 | **不可得**：transcript 的 tool frame 只有 state/output，没有时间戳 | 状态条该字段显示 `–`；wire 侧是 `tool.call → tool.result` 事件时间。`/messages` 的 `created_at` 是消息开始时间（不是工具调用时刻），配对结果比 wire 大 2.3 倍，不可替代 |
-| token | `main` 用逐步 `step.usage` 折叠；其余 agent 用各自 `meta.agent.usage.total` | 两者分别与各自 wire 折叠逐项一致；子 agent 读不到 `meta.agent.usage`（会话未被客户端加载时）则该 agent 不计入 |
-| 统计范围 | 整会话（页上限 50 页 ≈ 1000 轮） | 扩展版折叠整份 wire 文件 |
+| token | main 与各子 agent 都按 `step.usage` 逐步折叠后求和 | 与 wire 的 `usage.record` 同口径；面板包含**进行中的轮**已完成步骤，而 wire 的 `usage.record` 在轮结束才落盘，会话忙碌时面板会略大于 wire |
+| 统计范围 | 整会话（main 50 页、每个子 agent 20 页上限） | 扩展版折叠整份 wire 文件 |
 | 模型名 | `meta.agent.model` | 扩展版取 wire 的 `config.update` / `usage.record` |
 
 ### 注意
 
 - 想核对面板数字：`node desktop/verify.mjs <sessionId>`（省略 id 取最近改动的会话）
   会按扩展版口径读 `~/.kimi-code/sessions/**/wire.jsonl`，打印同一行字段用于逐项对照。
+  建议在会话**空闲**时对照：面板把进行中的轮也已完成的步骤算进去了，wire 的
+  `usage.record` 要等轮结束才写。
 - 客户端大版本更新会整体替换 `desktop-dist`，补丁随之消失（属预期）：重新执行
   `bash desktop/install.sh` 即可恢复。
 - 卸载（`--uninstall`）用备份逐字节还原 `index.html`，并删除 `/kuh` 载荷目录。
