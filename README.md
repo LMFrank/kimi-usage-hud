@@ -156,3 +156,7 @@ screenshots/  README 截图
 ## 版本历史
 
 见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE)。
