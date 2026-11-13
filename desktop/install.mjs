@@ -11,7 +11,7 @@
  * 行为：
  *   1. 备份 desktop-dist/index.html 为 index.html.bak-kuh（仅在备份不存在时
  *      创建，重装永远保留最早的原始版本）
- *   2. 把仓库里的 5 个载荷文件同步进 desktop-dist/kuh/（先暂存目录再原子替换）
+ *   2. 把仓库里的 6 个载荷文件同步进 desktop-dist/kuh/（先暂存目录再原子替换）
  *   3. 在 index.html 的 </head> 前注入 <script src="/kuh/loader.js?v=哈希">
  *      （哈希取自载荷内容，客户端更新缓存自动失效）
  *
@@ -33,12 +33,13 @@ const BACKUP_SUFFIX = '.bak-kuh';
 
 // 载荷清单：源（仓库内相对路径）→ 目标（载荷内相对路径）。
 // loader.js 放载荷根（index.html 只引它一个），其余保持仓库里的相对位置不变——
-// hud-app.js 用 './fold.js' 引折叠逻辑、fold.js 用 '../src/metrics.js' 引口径，
-// 位置一变这两处 import 就会 404。
+// hud-app.js 按 import.meta.url 的版本参数动态引 './fold.js' / './reader.js' /
+// '../src/metrics.js'，位置或版本透传被改动会造成模块 404 或旧缓存。
 const PAYLOAD_FILES = [
   ['desktop/loader.js', 'loader.js'],
   ['desktop/hud-app.js', 'desktop/hud-app.js'],
   ['desktop/fold.js', 'desktop/fold.js'],
+  ['desktop/reader.js', 'desktop/reader.js'],
   ['src/metrics.js', 'src/metrics.js'],
   ['styles/hud.css', 'styles/hud.css']
 ];

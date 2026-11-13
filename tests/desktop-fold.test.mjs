@@ -68,6 +68,7 @@ test('多轮多步：轮按 turnId 去重，步数/LLM 耗时/首 token/均轮�
 
   const s = summarizeFold(state);
   assert.equal(s.model, 'kimi-k2-local');
+  assert.equal(s.approximateTiming, false); // 原生 timing 不标近似
   assert.equal(s.turnCount, 2);
   assert.equal(s.turns, 2);
   assert.equal(s.steps, 3);
@@ -409,4 +410,119 @@ test('分页补齐途中被轮询覆盖更新：最新轮补上 durationMs 后�
   assert.equal(s.avgTurnMs, 3500); // (6+1)s / 2 轮
   assert.equal(s.steps, 2);
   assert.equal(s.output, 10);
+});
+
+test('Desktop 1.3.5 turns：snake_case 轮字段、index、usage 与 timing 按原口径折叠', () => {
+  const state = foldTranscript(emptyFold(), {
+    turns: [{
+      turn_id: 'turn_8',
+      ordinal: 8,
+      kind: 'agent',
+      duration_ms: 5_000,
+      steps: [{
+        index: 0,
+        usage: {
+          input_other: 100,
+          input_cache_read: 300,
+          input_cache_creation: 50,
+          output: 40
+        },
+        timing: {
+          first_token_ms: 200,
+          stream_ms: 1800,
+          server_first_token_ms: 150,
+          server_decode_ms: 1600
+        },
+        started_at: '2026-11-13T01:00:00.000Z',
+        ended_at: '2026-11-13T01:00:05.000Z'
+      }]
+    }],
+    has_more: false
+  });
+
+  const s = summarizeFold(state);
+  assert.equal(s.turnCount, 1);
+  assert.equal(s.turns, 1);
+  assert.equal(s.steps, 1);
+  assert.equal(s.input, 450);
+  assert.equal(s.output, 40);
+  assert.equal(s.cacheHitRate, (300 / 450) * 100);
+  assert.equal(s.llmMs, 2_000);
+  assert.equal(s.avgTtftMs, 200);
+  assert.equal(s.avgServerTtftMs, 150);
+  assert.equal(s.streamTokPerSec, 22);
+  assert.equal(s.decodeTokPerSec, 25);
+  assert.equal(s.avgTurnMs, 5_000);
+  assert.equal(s.lastTtftMs, 200);
+});
+
+test('新 turns 页按 turn_id 覆盖，使用 index 作为无 step_id 时的步骤键', () => {
+  const page = (output, streamMs) => ({
+    turns: [{
+      turn_id: 'turn_1',
+      ordinal: 1,
+      steps: [{
+        index: 2,
+        usage: { input_other: 1, output },
+        timing: { first_token_ms: 100, stream_ms: streamMs }
+      }]
+    }]
+  });
+  const state = emptyFold();
+  foldTranscript(state, page(5, 500));
+  foldTranscript(state, page(10, 1_000));
+
+  const s = summarizeFold(state);
+  assert.equal(s.steps, 1);
+  assert.equal(s.output, 10);
+  assert.equal(s.llmMs, 1_100);
+  assert.equal(s.streamTokPerSec, 10);
+});
+
+
+test('1.3.5 无 timing 时按模型 item 窗口恢复 TTFT/流式，不把后续工具执行计入 LLM', () => {
+  const started = Date.parse('2026-11-13T01:00:00.000Z');
+  const at = (offset) => new Date(started + offset).toISOString();
+  const state = foldTranscript(emptyFold(), {
+    turns: [{
+      turn_id: 'timeline-turn',
+      ordinal: 1,
+      duration_ms: 160_000,
+      steps: [
+        {
+          index: 2,
+          outcome: 'completed',
+          started_at: at(0),
+          ended_at: at(21_944),
+          finish_reason: 'tool_calls',
+          usage: { input_other: 100, output: 515, input_cache_read: 300, input_cache_creation: 0 }
+        },
+        {
+          index: 3,
+          outcome: 'completed',
+          started_at: at(30_000),
+          ended_at: at(31_000),
+          finish_reason: 'tool_calls',
+          usage: { input_other: 20, output: 9, input_cache_read: 0, input_cache_creation: 0 }
+        }
+      ],
+      items: [
+        { type: 'reasoning', step_index: 2, created_at: at(18_654) },
+        { type: 'tool_call', step_index: 2, created_at: at(21_881) },
+        { type: 'tool_call', step_index: 3, created_at: at(30_500) }
+      ]
+    }]
+  });
+
+  const s = summarizeFold(state);
+  assert.equal(s.steps, 2);
+  assert.equal(s.timingSteps, 1); // 只有 tool item 的步骤不伪造 timing
+  assert.equal(s.approximateTiming, true); // 向 UI 明确标记 REST 可见事件窗近似值
+  assert.equal(s.avgTtftMs, 18_654);
+  assert.equal(s.llmMs, 18_654 + 3_227); // 非 step 总时长或后续工具执行时间
+  assert.equal(s.avgTurnMs, 160_000);
+  assert.equal(s.input, 420);
+  assert.equal(s.output, 524);
+  assert.equal(s.streamTokPerSec, 160); // 仅有 timing 的 515 tok / 3227ms，后续工具时间不进样本
+  assert.equal(s.lastTtftMs, 18_654);
 });
