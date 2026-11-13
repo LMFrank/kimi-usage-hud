@@ -1,5 +1,22 @@
 # 更新记录
 
+## 0.2.3（2026-11-13）
+
+桌面客户端（Kimi Code 1.3.5）兼容与更新后自动恢复：
+
+- 数据源切换到 `GET /api/v1/sessions/<sid>/agents/<agent_id>/turns`，按客户端页面自身方式复用 `kimi-web.server-credential` 并携带 Bearer；模型名改从会话接口的 `agent_config.model` 读取。凭据只用于同源本地请求，不另行持久化或输出。
+- 新分页游标改为 `before_ordinal`，每页仍取 20 轮；折叠层适配新版 `turn_id` / `step_id` / `duration_ms`、snake_case `usage` 与 `timing`，保留跨页去重和进行中轮覆盖更新。
+- 仅在 `turns` 返回 404 时回退旧版 `/transcript` 与 `before_turn`；401 等其他错误直接显示，不通过回退吞错。
+- 新版 `turns` 不带旧版 `agents` roster 时，复用 1.3.5 前端同一 `/api/v1/ws`、Bearer 子协议和 `subscribe` 订阅，只从 `task.list` / `task` 的 `child_agent_id` 发现并递归订阅 agent；各 agent 历史回填、15s 最新页刷新和 token 汇总仍使用 turns REST，WS 不作为第二份用量数据源。
+- 初次模型/turns 加载失败后由后续路由轮询在原会话内自动重试；模型名随 2s 主轮询刷新，支持会话内切换模型。子 agent 历史回填按 agent 去重，空历史或失败在后续节拍重试。
+- WS 增加 ping→pong 与单层指数退避重连（250ms 起始、4s 封顶）；重连重新读取最新凭据并恢复 main 与已知 roster 订阅，stop 后不重连，旧 socket 的延迟回调隔离在当前会话状态之外。
+- 实证修正 1.3.5 turns 的指标缺口：部分 step 仅含 `started_at/ended_at/usage`，HUD 不再因此整体停留在「无耗时元数据」。优先使用原生 timing；缺失时按首 reasoning/assistant item 到首个后续非模型 item 的时间窗推导客户端 TTFT/流式，不把工具时长计入 LLM。该 REST 事件窗与 wire 存在毫秒级记录差，不作为 wire 精确计时；无模型 item 的步骤不伪造 timing，最近 TTFT 取最近有效正样本。
+- 修复重载后旧 fold 仍执行的问题：loader 和 HUD 已更新版本 hash 时，Electron 仍可能按无查询参数的模块 URL 复用旧 ES module；现在 HUD 将自身查询参数透传给 metrics / fold / reader，保证三者与当前载荷一致。
+- 补齐已完成子 agent roster：WS `task.list` 仅含活动任务，不能单独恢复历史 agent。现同时发现 main turns 中 `tool_call.agent_refs` 的真实 `agent_id`，已完成 agent 也走同一历史回填、15s 最新页刷新和去重流程；引用只用于 roster，不读取 prompt 或工具输出。
+- 近似计时显式标识：summary 含 REST timeline 推导时，LLM、客户端 TTFT、流式/解码速度显示 `≈`；原生 timing 不标近似，保留毫秒级记录差及无模型 item 不造 timing 的边界。
+- 新增可选的用户级 LaunchAgent：监听客户端 `desktop-dist` 变化并在登录时自检，补丁被客户端更新清除或载荷过期时自动调用原安装器恢复；提供卸载入口，幂等检查避免完整补丁被重复写入。
+- `npm run check` 纳入 `desktop/reader.js` 与两个自动恢复 shell 脚本的语法检查，自动恢复完整性清单同步覆盖 reader；测试增至 48 个，覆盖凭据复用、`before_ordinal`、仅限 404 的回退、新版字段折叠、初次失败自动重试、模型刷新、WS agent roster 回填/汇总，以及 ping/pong、鉴权重读、断线重连、旧回调隔离、模型 item 时间窗恢复、HUD 子模块版本缓存隔离、已完成 agent_refs 回填和 timeline 近似的可见标记。
+
 ## 0.2.2（2026-10-22）
 
 桌面客户端（Kimi Code 1.1.1 / host 2.2.0）数值修正：
